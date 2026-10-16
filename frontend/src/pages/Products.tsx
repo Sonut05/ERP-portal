@@ -1,45 +1,54 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { productsApi } from '../api/products';
 import type { Product } from '../types';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../hooks/useToast';
+import { useDebounce } from '../hooks/useDebounce';
+import Sheet from '../components/Sheet';
+import Pagination from '../components/Pagination';
+import { Empty, TableSkeleton } from '../components/TableState';
+import { formatPrice, plural } from '../lib/format';
+
+const emptyForm = {
+  name: '', sku: '', category: '', unit_price: 0,
+  current_stock: 0, min_stock_alert: 0, location: '',
+};
 
 export default function Products() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const [search, setSearch] = useState('');
+  const [total, setTotal] = useState(0);
+  const [searchInput, setSearchInput] = useState('');
+  const search = useDebounce(searchInput);
   const [lowStockOnly, setLowStockOnly] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [editProduct, setEditProduct] = useState<Product | null>(null);
-  const [toast, setToast] = useState<{ type: string; message: string } | null>(null);
+  const toast = useToast();
   const { hasRole } = useAuth();
+  const latestRequest = useRef(0);
 
-  const [form, setForm] = useState({
-    name: '', sku: '', category: '', unit_price: 0,
-    current_stock: 0, min_stock_alert: 0, location: '',
-  });
+  const [form, setForm] = useState(emptyForm);
 
   useEffect(() => {
     loadProducts();
   }, [page, search, lowStockOnly]);
 
   const loadProducts = async () => {
+    const requestId = ++latestRequest.current;
     try {
       setLoading(true);
       const res = await productsApi.getAll({ page, limit: 10, search, lowStock: lowStockOnly || undefined });
+      if (requestId !== latestRequest.current) return;
       setProducts(res.data.data);
       setTotalPages(res.data.pagination.totalPages);
+      setTotal(res.data.pagination.total);
     } catch (err) {
       console.error(err);
     } finally {
-      setLoading(false);
+      if (requestId === latestRequest.current) setLoading(false);
     }
-  };
-
-  const showToast = (type: string, message: string) => {
-    setToast({ type, message });
-    setTimeout(() => setToast(null), 3000);
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -49,17 +58,17 @@ export default function Products() {
       if (editProduct) {
         const { current_stock, ...updatePayload } = payload;
         await productsApi.update(editProduct.id, updatePayload);
-        showToast('success', 'Product updated');
+        toast.show('success', 'Product updated');
       } else {
         await productsApi.create(payload);
-        showToast('success', 'Product created');
+        toast.show('success', 'Product created');
       }
       setShowModal(false);
       setEditProduct(null);
       resetForm();
       loadProducts();
     } catch (err: any) {
-      showToast('error', err.response?.data?.message || 'Failed');
+      toast.show('error', err.response?.data?.message || 'Failed');
     }
   };
 
@@ -73,9 +82,7 @@ export default function Products() {
     setShowModal(true);
   };
 
-  const resetForm = () => {
-    setForm({ name: '', sku: '', category: '', unit_price: 0, current_stock: 0, min_stock_alert: 0, location: '' });
-  };
+  const resetForm = () => setForm(emptyForm);
 
   const openCreate = () => {
     setEditProduct(null);
@@ -83,147 +90,170 @@ export default function Products() {
     setShowModal(true);
   };
 
-  const formatPrice = (price: number) => `₹${Number(price).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
+  const closeForm = () => {
+    setShowModal(false);
+    setEditProduct(null);
+  };
+
+  const canEdit = hasRole('Admin', 'Warehouse');
+  const filtered = Boolean(searchInput || lowStockOnly);
+  const clearFilters = () => {
+    setSearchInput('');
+    setLowStockOnly(false);
+    setPage(1);
+  };
 
   return (
-    <div className="animate-fadeIn">
-      {toast && (
-        <div className="toast-container">
-          <div className={`toast toast-${toast.type}`}>{toast.message}</div>
-        </div>
-      )}
-
-      <div className="page-header">
+    <div>
+      <div className="page-head">
         <div>
           <h1 className="page-title">Products</h1>
-          <p className="page-subtitle">Manage inventory and product catalog</p>
+          <p className="page-meta">{loading && products.length === 0 ? ' ' : filtered ? plural(total, 'match', 'matches') : plural(total, 'product')}</p>
         </div>
-        {hasRole('Admin', 'Warehouse') && (
-          <button className="btn btn-primary" onClick={openCreate}>+ Add Product</button>
+        {canEdit && (
+          <button type="button" className="btn btn--primary" onClick={openCreate}>
+            Add product
+          </button>
         )}
       </div>
 
-      <div className="filter-bar">
-        <div className="search-input-wrapper">
-          <span className="search-icon">🔍</span>
-          <input className="form-input" placeholder="Search by name or SKU..." value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
+      <div className="filters" role="search">
+        <div className="field field--grow">
+          <label htmlFor="p-search">Search</label>
+          <input
+            id="p-search"
+            className="input"
+            type="search"
+            placeholder="Product name or SKU"
+            value={searchInput}
+            onChange={(e) => { setSearchInput(e.target.value); setPage(1); }}
+          />
         </div>
-        <button className={`btn ${lowStockOnly ? 'btn-danger' : 'btn-ghost'} btn-sm`} onClick={() => { setLowStockOnly(!lowStockOnly); setPage(1); }}>
-          ⚠️ Low Stock {lowStockOnly ? '(Active)' : ''}
-        </button>
+        <label className="check">
+          <input type="checkbox" checked={lowStockOnly} onChange={(e) => { setLowStockOnly(e.target.checked); setPage(1); }} />
+          <span>Low stock only</span>
+        </label>
+        {filtered && (
+          <button type="button" className="link-btn filters__clear" onClick={clearFilters}>
+            Clear filters
+          </button>
+        )}
       </div>
 
-      <div className="glass-card-static" style={{ padding: 0, overflow: 'hidden' }}>
-        {loading ? (
-          <div className="loading-spinner"><div className="spinner" /></div>
+      <div className="ledger" aria-busy={loading}>
+        {loading && products.length === 0 ? (
+          <TableSkeleton />
+        ) : products.length === 0 ? (
+          <Empty
+            title={lowStockOnly && !searchInput ? 'Nothing is below its minimum' : filtered ? 'No products match' : 'No products yet'}
+            action={
+              filtered ? (
+                <button type="button" className="btn" onClick={clearFilters}>Clear filters</button>
+              ) : canEdit ? (
+                <button type="button" className="btn btn--primary" onClick={openCreate}>Add the first product</button>
+              ) : undefined
+            }
+          />
         ) : (
-          <div className="table-container">
-            <table className="data-table">
+          <div className={`table-wrap ${loading ? 'is-loading' : ''}`}>
+            <table className="table table--stack">
               <thead>
                 <tr>
                   <th>Product</th>
                   <th>SKU</th>
                   <th>Category</th>
-                  <th>Price</th>
-                  <th>Stock</th>
-                  <th>Min Alert</th>
+                  <th className="num">Price</th>
+                  <th className="num">Stock</th>
+                  <th className="num">Minimum</th>
                   <th>Location</th>
-                  {hasRole('Admin', 'Warehouse') && <th>Actions</th>}
+                  {canEdit && <th className="num">Actions</th>}
                 </tr>
               </thead>
               <tbody>
-                {products.length > 0 ? products.map((p) => (
-                  <tr key={p.id}>
-                    <td>{p.name}</td>
-                    <td style={{ fontFamily: 'monospace', color: '#818cf8' }}>{p.sku}</td>
-                    <td>{p.category || '—'}</td>
-                    <td>{formatPrice(p.unit_price)}</td>
-                    <td>
-                      {p.current_stock}
-                      {p.current_stock <= p.min_stock_alert && (
-                        <span className="badge badge-low-stock" style={{ marginLeft: '8px' }}>Low</span>
-                      )}
-                    </td>
-                    <td>{p.min_stock_alert}</td>
-                    <td>{p.location || '—'}</td>
-                    {hasRole('Admin', 'Warehouse') && (
-                      <td>
-                        <button className="btn btn-ghost btn-sm" onClick={() => handleEdit(p)}>✏️</button>
+                {products.map((p) => {
+                  const low = p.current_stock <= p.min_stock_alert;
+                  return (
+                    <tr key={p.id}>
+                      <td data-label="" className="primary-cell"><strong>{p.name}</strong></td>
+                      <td data-label="SKU" className="ref">{p.sku}</td>
+                      <td data-label="Category">{p.category || '—'}</td>
+                      <td data-label="Price" className="num">{formatPrice(p.unit_price)}</td>
+                      <td data-label="Stock" className={`num ${low ? 'is-low' : ''}`}>
+                        {low && <span className="flag">Low</span>}
+                        <strong>{p.current_stock}</strong>
                       </td>
-                    )}
-                  </tr>
-                )) : (
-                  <tr><td colSpan={8}><div className="empty-state"><div className="empty-state-icon">📦</div><div className="empty-state-text">No products found</div></div></td></tr>
-                )}
+                      <td data-label="Minimum" className="num">{p.min_stock_alert}</td>
+                      <td data-label="Location">{p.location || '—'}</td>
+                      {canEdit && (
+                        <td data-label="" className="actions">
+                          <button type="button" className="link-btn" onClick={() => handleEdit(p)}>Edit</button>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </div>
 
-      {totalPages > 1 && (
-        <div className="pagination">
-          <button className="pagination-btn" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>← Prev</button>
-          {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
-            <button key={p} className={`pagination-btn ${p === page ? 'active' : ''}`} onClick={() => setPage(p)}>{p}</button>
-          ))}
-          <button className="pagination-btn" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}>Next →</button>
-        </div>
-      )}
+      <Pagination page={page} totalPages={totalPages} onChange={setPage} />
 
       {showModal && (
-        <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{editProduct ? 'Edit Product' : 'Add New Product'}</h2>
-              <button className="modal-close" onClick={() => setShowModal(false)}>×</button>
+        <Sheet
+          title={editProduct ? 'Edit product' : 'Add product'}
+          onClose={closeForm}
+          dismissOnBackdrop={false}
+          onSubmit={handleSubmit}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={closeForm}>Cancel</button>
+              <button type="submit" className="btn btn--primary">{editProduct ? 'Save changes' : 'Create product'}</button>
+            </>
+          }
+        >
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="pf-name">Product name <span className="req">(required)</span></label>
+              <input id="pf-name" className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
             </div>
-            <form onSubmit={handleSubmit}>
-              <div className="modal-body">
-                <div className="form-row">
-                  <div className="form-group">
-                    <label className="form-label">Product Name *</label>
-                    <input className="form-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">SKU Code *</label>
-                    <input className="form-input" value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value })} required />
-                  </div>
-                </div>
-                <div className="form-row">
-                  <div className="form-group">
-                    <label className="form-label">Category</label>
-                    <input className="form-input" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Unit Price (₹) *</label>
-                    <input className="form-input" type="number" step="0.01" value={form.unit_price} onChange={(e) => setForm({ ...form, unit_price: parseFloat(e.target.value) || 0 })} required />
-                  </div>
-                </div>
-                {!editProduct && (
-                  <div className="form-group">
-                    <label className="form-label">Initial Stock</label>
-                    <input className="form-input" type="number" value={form.current_stock} onChange={(e) => setForm({ ...form, current_stock: parseInt(e.target.value) || 0 })} />
-                  </div>
-                )}
-                <div className="form-row">
-                  <div className="form-group">
-                    <label className="form-label">Min Stock Alert</label>
-                    <input className="form-input" type="number" value={form.min_stock_alert} onChange={(e) => setForm({ ...form, min_stock_alert: parseInt(e.target.value) || 0 })} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Location / Warehouse</label>
-                    <input className="form-input" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
-                  </div>
-                </div>
-              </div>
-              <div className="modal-footer">
-                <button type="button" className="btn btn-ghost" onClick={() => setShowModal(false)}>Cancel</button>
-                <button type="submit" className="btn btn-primary">{editProduct ? 'Update' : 'Create'}</button>
-              </div>
-            </form>
+            <div className="field">
+              <label htmlFor="pf-sku">SKU code <span className="req">(required)</span></label>
+              <input id="pf-sku" className="input" value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value })} required />
+            </div>
           </div>
-        </div>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="pf-cat">Category</label>
+              <input id="pf-cat" className="input" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
+            </div>
+            <div className="field">
+              <label htmlFor="pf-price">Unit price (₹)</label>
+              <input id="pf-price" className="input" type="number" step="0.01" min="0" value={form.unit_price} onChange={(e) => setForm({ ...form, unit_price: parseFloat(e.target.value) || 0 })} required />
+            </div>
+          </div>
+          {!editProduct ? (
+            <div className="field">
+              <label htmlFor="pf-stock">Opening stock</label>
+              <input id="pf-stock" className="input" type="number" min="0" value={form.current_stock} onChange={(e) => setForm({ ...form, current_stock: parseInt(e.target.value) || 0 })} />
+            </div>
+          ) : (
+            <p className="hint hint--block">
+              Current stock is {editProduct.current_stock}. To change it, record a movement under Stock movements.
+            </p>
+          )}
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="pf-min">Minimum stock alert</label>
+              <input id="pf-min" className="input" type="number" min="0" value={form.min_stock_alert} onChange={(e) => setForm({ ...form, min_stock_alert: parseInt(e.target.value) || 0 })} />
+            </div>
+            <div className="field">
+              <label htmlFor="pf-loc">Location / warehouse</label>
+              <input id="pf-loc" className="input" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
+            </div>
+          </div>
+        </Sheet>
       )}
     </div>
   );

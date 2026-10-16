@@ -1,7 +1,20 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { stockApi } from '../api/stock';
 import { productsApi } from '../api/products';
 import type { StockMovement, Product } from '../types';
+import { useToast } from '../hooks/useToast';
+import Sheet from '../components/Sheet';
+import Pagination from '../components/Pagination';
+import StatusMark from '../components/StatusMark';
+import { Empty, TableSkeleton } from '../components/TableState';
+import { formatDateTime, plural } from '../lib/format';
+
+const emptyForm = {
+  product_id: 0,
+  quantity: 1,
+  movement_type: 'IN' as 'IN' | 'OUT',
+  reason: '',
+};
 
 export default function StockMovements() {
   const [movements, setMovements] = useState<StockMovement[]>([]);
@@ -9,15 +22,12 @@ export default function StockMovements() {
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  const [total, setTotal] = useState(0);
   const [showModal, setShowModal] = useState(false);
-  const [toast, setToast] = useState<{ type: string; message: string } | null>(null);
+  const toast = useToast();
+  const latestRequest = useRef(0);
 
-  const [form, setForm] = useState({
-    product_id: 0,
-    quantity: 1,
-    movement_type: 'IN' as 'IN' | 'OUT',
-    reason: '',
-  });
+  const [form, setForm] = useState(emptyForm);
 
   useEffect(() => {
     loadMovements();
@@ -25,15 +35,18 @@ export default function StockMovements() {
   }, [page]);
 
   const loadMovements = async () => {
+    const requestId = ++latestRequest.current;
     try {
       setLoading(true);
       const res = await stockApi.getAll({ page, limit: 15 });
+      if (requestId !== latestRequest.current) return;
       setMovements(res.data.data);
       setTotalPages(res.data.pagination.totalPages);
+      setTotal(res.data.pagination.total);
     } catch (err) {
       console.error(err);
     } finally {
-      setLoading(false);
+      if (requestId === latestRequest.current) setLoading(false);
     }
   };
 
@@ -46,11 +59,6 @@ export default function StockMovements() {
     }
   };
 
-  const showToast = (type: string, message: string) => {
-    setToast({ type, message });
-    setTimeout(() => setToast(null), 3000);
-  };
-
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     try {
@@ -60,123 +68,134 @@ export default function StockMovements() {
         movement_type: form.movement_type,
         reason: form.reason,
       });
-      showToast('success', `Stock ${form.movement_type === 'IN' ? 'added' : 'removed'} successfully`);
+      toast.show('success', `Stock ${form.movement_type === 'IN' ? 'added' : 'removed'} successfully`);
       setShowModal(false);
-      setForm({ product_id: 0, quantity: 1, movement_type: 'IN', reason: '' });
+      setForm(emptyForm);
       loadMovements();
+      loadProducts();
     } catch (err: any) {
-      showToast('error', err.response?.data?.message || 'Failed to record movement');
+      toast.show('error', err.response?.data?.message || 'Failed to record movement');
     }
   };
 
-  return (
-    <div className="animate-fadeIn">
-      {toast && (
-        <div className="toast-container">
-          <div className={`toast toast-${toast.type}`}>{toast.message}</div>
-        </div>
-      )}
+  const selected = products.find((p) => p.id === Number(form.product_id));
+  const after = selected ? selected.current_stock + (form.movement_type === 'IN' ? form.quantity : -form.quantity) : null;
+  const overdrawn = after !== null && after < 0;
 
-      <div className="page-header">
+  return (
+    <div>
+      <div className="page-head">
         <div>
-          <h1 className="page-title">Stock Movements</h1>
-          <p className="page-subtitle">Track inventory in and out movements</p>
+          <h1 className="page-title">Stock movements</h1>
+          <p className="page-meta">{loading && movements.length === 0 ? ' ' : plural(total, 'movement')}</p>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowModal(true)}>+ Record Movement</button>
+        <button type="button" className="btn btn--primary" onClick={() => setShowModal(true)}>
+          Record movement
+        </button>
       </div>
 
-      <div className="glass-card-static" style={{ padding: 0, overflow: 'hidden' }}>
-        {loading ? (
-          <div className="loading-spinner"><div className="spinner" /></div>
+      <div className="ledger" aria-busy={loading}>
+        {loading && movements.length === 0 ? (
+          <TableSkeleton />
+        ) : movements.length === 0 ? (
+          <Empty
+            title="No stock movements yet"
+            action={
+              <button type="button" className="btn btn--primary" onClick={() => setShowModal(true)}>Record the first one</button>
+            }
+          >
+            Goods received, damaged or sent out will be listed here.
+          </Empty>
         ) : (
-          <div className="table-container">
-            <table className="data-table">
+          <div className={`table-wrap ${loading ? 'is-loading' : ''}`}>
+            <table className="table table--stack">
               <thead>
                 <tr>
                   <th>Date</th>
                   <th>Product</th>
                   <th>SKU</th>
                   <th>Type</th>
-                  <th>Qty</th>
+                  <th className="num">Quantity</th>
                   <th>Reason</th>
-                  <th>By</th>
+                  <th>Recorded by</th>
                 </tr>
               </thead>
               <tbody>
-                {movements.length > 0 ? movements.map((m) => (
+                {movements.map((m) => (
                   <tr key={m.id}>
-                    <td>{new Date(m.created_at).toLocaleString()}</td>
-                    <td>{m.product_name || '—'}</td>
-                    <td style={{ fontFamily: 'monospace', color: '#818cf8' }}>{m.product_sku || '—'}</td>
-                    <td><span className={`badge badge-${m.movement_type.toLowerCase()}`}>{m.movement_type}</span></td>
-                    <td style={{ fontWeight: 600, color: m.movement_type === 'IN' ? '#10b981' : '#ef4444' }}>
-                      {m.movement_type === 'IN' ? '+' : '-'}{m.quantity_changed}
+                    <td data-label="Date">{formatDateTime(m.created_at)}</td>
+                    <td data-label="Product"><strong>{m.product_name || '—'}</strong></td>
+                    <td data-label="SKU" className="ref">{m.product_sku || '—'}</td>
+                    <td data-label="Type"><StatusMark value={m.movement_type} label={m.movement_type === 'IN' ? 'In' : 'Out'} /></td>
+                    <td data-label="Quantity" className={`num qty qty--${m.movement_type.toLowerCase()}`}>
+                      {m.movement_type === 'IN' ? '+' : '−'}{m.quantity_changed}
                     </td>
-                    <td>{m.reason}</td>
-                    <td>{m.created_by_name || '—'}</td>
+                    <td data-label="Reason">{m.reason}</td>
+                    <td data-label="Recorded by">{m.created_by_name || '—'}</td>
                   </tr>
-                )) : (
-                  <tr><td colSpan={7}><div className="empty-state"><div className="empty-state-icon">🏭</div><div className="empty-state-text">No stock movements recorded</div></div></td></tr>
-                )}
+                ))}
               </tbody>
             </table>
           </div>
         )}
       </div>
 
-      {totalPages > 1 && (
-        <div className="pagination">
-          <button className="pagination-btn" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>← Prev</button>
-          {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
-            <button key={p} className={`pagination-btn ${p === page ? 'active' : ''}`} onClick={() => setPage(p)}>{p}</button>
-          ))}
-          <button className="pagination-btn" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}>Next →</button>
-        </div>
-      )}
+      <Pagination page={page} totalPages={totalPages} onChange={setPage} />
 
       {showModal && (
-        <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>Record Stock Movement</h2>
-              <button className="modal-close" onClick={() => setShowModal(false)}>×</button>
-            </div>
-            <form onSubmit={handleSubmit}>
-              <div className="modal-body">
-                <div className="form-group">
-                  <label className="form-label">Product *</label>
-                  <select className="form-select" value={form.product_id} onChange={(e) => setForm({ ...form, product_id: parseInt(e.target.value) })} required>
-                    <option value={0}>Select a product</option>
-                    {products.map(p => (
-                      <option key={p.id} value={p.id}>{p.name} ({p.sku}) — Stock: {p.current_stock}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="form-row">
-                  <div className="form-group">
-                    <label className="form-label">Movement Type *</label>
-                    <select className="form-select" value={form.movement_type} onChange={(e) => setForm({ ...form, movement_type: e.target.value as 'IN' | 'OUT' })}>
-                      <option value="IN">📥 Stock IN (Add)</option>
-                      <option value="OUT">📤 Stock OUT (Remove)</option>
-                    </select>
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Quantity *</label>
-                    <input className="form-input" type="number" min="1" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: parseInt(e.target.value) || 1 })} required />
-                  </div>
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Reason *</label>
-                  <textarea className="form-textarea" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} placeholder="e.g., New shipment received, Damaged goods..." required />
-                </div>
-              </div>
-              <div className="modal-footer">
-                <button type="button" className="btn btn-ghost" onClick={() => setShowModal(false)}>Cancel</button>
-                <button type="submit" className="btn btn-primary" disabled={!form.product_id}>Record Movement</button>
-              </div>
-            </form>
+        <Sheet
+          title="Record stock movement"
+          onClose={() => setShowModal(false)}
+          dismissOnBackdrop={false}
+          onSubmit={handleSubmit}
+          footer={
+            <>
+              <button type="button" className="btn" onClick={() => setShowModal(false)}>Cancel</button>
+              <button type="submit" className="btn btn--primary" disabled={!form.product_id}>Record movement</button>
+            </>
+          }
+        >
+          <div className="field">
+            <label htmlFor="sm-product">Product</label>
+            <select id="sm-product" className="select" value={form.product_id} onChange={(e) => setForm({ ...form, product_id: parseInt(e.target.value) })} required>
+              <option value={0}>Select a product</option>
+              {products.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} ({p.sku}), {p.current_stock} in stock</option>
+              ))}
+            </select>
           </div>
-        </div>
+
+          <fieldset className="segmented">
+            <legend>Direction</legend>
+            <label className={form.movement_type === 'IN' ? 'is-on' : ''}>
+              <input type="radio" name="movement_type" value="IN" checked={form.movement_type === 'IN'} onChange={() => setForm({ ...form, movement_type: 'IN' })} />
+              <span>Stock in</span>
+              <small>Add to the shelf</small>
+            </label>
+            <label className={form.movement_type === 'OUT' ? 'is-on' : ''}>
+              <input type="radio" name="movement_type" value="OUT" checked={form.movement_type === 'OUT'} onChange={() => setForm({ ...form, movement_type: 'OUT' })} />
+              <span>Stock out</span>
+              <small>Remove from the shelf</small>
+            </label>
+          </fieldset>
+
+          <div className="field">
+            <label htmlFor="sm-qty">Quantity</label>
+            <input id="sm-qty" className="input" type="number" min="1" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: parseInt(e.target.value) || 1 })} required />
+            {selected && (
+              <span className={`hint ${overdrawn ? 'hint--bad' : ''}`}>
+                {overdrawn
+                  ? `Only ${selected.current_stock} in stock. This would take it below zero.`
+                  : `${selected.current_stock} in stock now, ${after} after this movement.`}
+              </span>
+            )}
+          </div>
+
+          <div className="field">
+            <label htmlFor="sm-reason">Reason</label>
+            <textarea id="sm-reason" className="textarea" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} placeholder="New shipment received, damaged goods, sample sent…" required />
+          </div>
+        </Sheet>
       )}
     </div>
   );

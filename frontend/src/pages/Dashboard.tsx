@@ -1,130 +1,213 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { dashboardApi } from '../api/dashboard';
-import type { DashboardStats } from '../types';
+import { productsApi } from '../api/products';
+import { useAuth } from '../context/AuthContext';
+import type { DashboardStats, Product } from '../types';
+import StatusMark from '../components/StatusMark';
+import { Empty, TableSkeleton } from '../components/TableState';
+import { formatDate, formatLongDate } from '../lib/format';
 
 export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [lowStock, setLowStock] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
-  const navigate = useNavigate();
+  const [failed, setFailed] = useState(false);
+  const { hasRole } = useAuth();
+
+  const canSeeOrders = hasRole('Admin', 'Sales', 'Accounts');
+  const canSeeCustomers = hasRole('Admin', 'Sales', 'Accounts');
 
   useEffect(() => {
     loadStats();
   }, []);
 
   const loadStats = async () => {
+    setLoading(true);
+    setFailed(false);
     try {
       const res = await dashboardApi.getStats();
       setStats(res.data.data);
     } catch (err) {
       console.error('Failed to load stats:', err);
+      setFailed(true);
     } finally {
       setLoading(false);
     }
+    // The shortlist of what is actually running low uses the existing products endpoint.
+    try {
+      const res = await productsApi.getAll({ lowStock: true, limit: 8 });
+      setLowStock(res.data.data);
+    } catch (err) {
+      console.error('Failed to load low stock list:', err);
+    }
   };
 
-  if (loading) {
-    return (
-      <div className="loading-spinner">
-        <div className="spinner" />
-      </div>
-    );
-  }
+  const drafts = stats?.orders?.drafts || 0;
+  const lowCount = stats?.products?.lowStock || 0;
+  const leads = stats?.customers?.leads || 0;
+
+  const attention = [
+    {
+      count: drafts,
+      text: drafts === 1 ? 'draft order is waiting to be confirmed' : 'draft orders are waiting to be confirmed',
+      to: canSeeOrders ? '/orders' : null,
+      cta: 'Review orders',
+    },
+    {
+      count: lowCount,
+      text: lowCount === 1 ? 'product is at or below its minimum stock' : 'products are at or below their minimum stock',
+      to: '/products',
+      cta: 'See products',
+    },
+    {
+      count: leads,
+      text: leads === 1 ? 'customer is still a lead' : 'customers are still leads',
+      to: canSeeCustomers ? '/customers' : null,
+      cta: 'Open customers',
+    },
+  ].filter((a) => a.count > 0);
 
   return (
-    <div className="animate-fadeIn">
-      <div className="page-header">
+    <div>
+      <div className="page-head">
         <div>
           <h1 className="page-title">Dashboard</h1>
-          <p className="page-subtitle">Overview of your business operations</p>
+          <p className="page-meta">{formatLongDate()}</p>
         </div>
       </div>
 
-      <div className="stats-grid">
-        <div className="glass-card stat-card stat-card-purple" onClick={() => navigate('/customers')} style={{ cursor: 'pointer' }}>
-          <div className="stat-card-icon">👥</div>
-          <div className="stat-card-value">{stats?.customers?.total || 0}</div>
-          <div className="stat-card-label">Total Customers</div>
-          <div className="stat-card-sub">
-            <span>{stats?.customers?.active || 0}</span> active · <span>{stats?.customers?.leads || 0}</span> leads
-          </div>
+      {loading ? (
+        <TableSkeleton rows={8} />
+      ) : failed || !stats ? (
+        <div className="ledger">
+          <Empty
+            title="The figures didn’t load"
+            action={
+              <button type="button" className="btn" onClick={loadStats}>
+                Try again
+              </button>
+            }
+          >
+            Check your connection, then try again.
+          </Empty>
         </div>
+      ) : (
+        <>
+          <section aria-labelledby="attention-h" className="block">
+            <h2 id="attention-h" className="section-title">Needs attention</h2>
+            {attention.length === 0 ? (
+              <p className="all-clear">Nothing is waiting on you. No drafts, no low stock, no open leads.</p>
+            ) : (
+              <ul className="attention">
+                {attention.map((a) => (
+                  <li key={a.cta} className="attention__row">
+                    <span className="attention__count">{a.count}</span>
+                    <span className="attention__text">{a.text}</span>
+                    {a.to && (
+                      <Link to={a.to} className="link-btn">
+                        {a.cta}
+                      </Link>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
 
-        <div className="glass-card stat-card stat-card-cyan" onClick={() => navigate('/products')} style={{ cursor: 'pointer' }}>
-          <div className="stat-card-icon">📦</div>
-          <div className="stat-card-value">{stats?.products?.total || 0}</div>
-          <div className="stat-card-label">Total Products</div>
-          <div className="stat-card-sub">
-            <span style={{ color: stats?.products?.lowStock ? '#f59e0b' : undefined }}>
-              {stats?.products?.lowStock || 0}
-            </span> low stock alerts
-          </div>
-        </div>
+          <section aria-label="Totals" className="totals block">
+            <div className="totals__col">
+              <div className="totals__label">Customers</div>
+              <div className="totals__value">{stats.customers?.total || 0}</div>
+              <div className="totals__detail">
+                {stats.customers?.active || 0} active, {leads} leads
+              </div>
+            </div>
+            <div className="totals__col">
+              <div className="totals__label">Products</div>
+              <div className="totals__value">{stats.products?.total || 0}</div>
+              <div className="totals__detail">{lowCount} below minimum</div>
+            </div>
+            <div className="totals__col">
+              <div className="totals__label">Sales orders</div>
+              <div className="totals__value">{stats.orders?.total || 0}</div>
+              <div className="totals__detail">
+                {stats.orders?.confirmed || 0} confirmed, {drafts} drafts
+              </div>
+            </div>
+          </section>
 
-        <div className="glass-card stat-card stat-card-green" onClick={() => navigate('/orders')} style={{ cursor: 'pointer' }}>
-          <div className="stat-card-icon">📋</div>
-          <div className="stat-card-value">{stats?.orders?.total || 0}</div>
-          <div className="stat-card-label">Total Orders</div>
-          <div className="stat-card-sub">
-            <span>{stats?.orders?.confirmed || 0}</span> confirmed · <span>{stats?.orders?.drafts || 0}</span> drafts
-          </div>
-        </div>
+          <div className="split">
+            <section aria-labelledby="recent-h">
+              <h2 id="recent-h" className="section-title">Recent sales orders</h2>
+              <div className="ledger">
+                {stats.recentOrders && stats.recentOrders.length > 0 ? (
+                  <div className="table-wrap">
+                    <table className="table table--stack">
+                      <thead>
+                        <tr>
+                          <th>Order no.</th>
+                          <th>Customer</th>
+                          <th className="num">Qty</th>
+                          <th>Status</th>
+                          <th>Date</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {stats.recentOrders.map((order) => (
+                          <tr key={order.id} className={order.status === 'Cancelled' ? 'is-void' : ''}>
+                            <td data-label="Order no." className="ref">
+                              {canSeeOrders ? <Link to="/orders" className="ref-link">{order.order_number}</Link> : order.order_number}
+                            </td>
+                            <td data-label="Customer">{order.customer_name}</td>
+                            <td data-label="Qty" className="num">{order.total_quantity}</td>
+                            <td data-label="Status"><StatusMark value={order.status} /></td>
+                            <td data-label="Date">{formatDate(order.created_at)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <Empty title="No orders yet">Orders appear here as soon as the first one is raised.</Empty>
+                )}
+              </div>
+            </section>
 
-        <div className="glass-card stat-card stat-card-orange">
-          <div className="stat-card-icon">⚠️</div>
-          <div className="stat-card-value">{stats?.products?.lowStock || 0}</div>
-          <div className="stat-card-label">Low Stock Alerts</div>
-          <div className="stat-card-sub">
-            Products below minimum threshold
+            <section aria-labelledby="low-h">
+              <h2 id="low-h" className="section-title">Running low</h2>
+              <div className="ledger">
+                {lowStock.length > 0 ? (
+                  <ul className="lowlist">
+                    {lowStock.map((p) => {
+                      const ratio = p.min_stock_alert > 0 ? Math.min(100, Math.round((p.current_stock / p.min_stock_alert) * 100)) : 0;
+                      return (
+                        <li key={p.id} className="lowlist__row">
+                          <div className="lowlist__top">
+                            <span className="lowlist__name">{p.name}</span>
+                            <span className="lowlist__qty">
+                              <strong>{p.current_stock}</strong> of {p.min_stock_alert}
+                            </span>
+                          </div>
+                          <div className="gauge" aria-hidden="true">
+                            <span style={{ width: `${ratio}%` }} />
+                          </div>
+                          <div className="lowlist__meta">
+                            {p.sku}
+                            {p.location ? `, ${p.location}` : ''}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <Empty title="Nothing is below its minimum">Every product is above its alert level.</Empty>
+                )}
+              </div>
+            </section>
           </div>
-        </div>
-      </div>
-
-      {/* Recent Orders */}
-      <div className="glass-card-static" style={{ padding: 0, overflow: 'hidden' }}>
-        <div style={{ padding: '20px 24px', borderBottom: '1px solid rgba(148,163,184,0.1)' }}>
-          <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#818cf8' }}>Recent Sales Orders</h3>
-        </div>
-        <div className="table-container">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Order No.</th>
-                <th>Customer</th>
-                <th>Qty</th>
-                <th>Status</th>
-                <th>Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats?.recentOrders && stats.recentOrders.length > 0 ? (
-                stats.recentOrders.map((order) => (
-                  <tr key={order.id} onClick={() => navigate(`/orders`)} style={{ cursor: 'pointer' }}>
-                    <td style={{ fontFamily: 'monospace', color: '#818cf8' }}>{order.order_number}</td>
-                    <td>{order.customer_name}</td>
-                    <td>{order.total_quantity}</td>
-                    <td>
-                      <span className={`badge badge-${order.status.toLowerCase()}`}>
-                        {order.status}
-                      </span>
-                    </td>
-                    <td>{new Date(order.created_at).toLocaleDateString()}</td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={5}>
-                    <div className="empty-state">
-                      <div className="empty-state-icon">📋</div>
-                      <div className="empty-state-text">No orders yet</div>
-                    </div>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+        </>
+      )}
     </div>
   );
 }
