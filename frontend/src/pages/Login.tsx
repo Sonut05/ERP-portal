@@ -2,8 +2,15 @@ import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { authApi } from '../api/auth';
-import ThreeBackground from '../components/ThreeBackground';
 import LogoIcon from '../components/LogoIcon';
+
+// What each role can open, taken from the route guards in App.tsx.
+const testAccounts = [
+  { role: 'Admin', email: 'admin@erp.com', password: 'Admin@123', opens: 'Every screen, every action' },
+  { role: 'Sales', email: 'sales@erp.com', password: 'Sales@123', opens: 'Customers and orders. Products are read-only' },
+  { role: 'Warehouse', email: 'warehouse@erp.com', password: 'Warehouse@123', opens: 'Products and stock movements' },
+  { role: 'Accounts', email: 'accounts@erp.com', password: 'Accounts@123', opens: 'Customers, products and orders, read-only' },
+];
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -34,83 +41,80 @@ export default function Login() {
     }
   };
 
-  const testCredentials = [
-    { role: 'Admin', email: 'admin@erp.com', password: 'Admin@123' },
-    { role: 'Sales', email: 'sales@erp.com', password: 'Sales@123' },
-    { role: 'Warehouse', email: 'warehouse@erp.com', password: 'Warehouse@123' },
-    { role: 'Accounts', email: 'accounts@erp.com', password: 'Accounts@123' },
-  ];
-
   return (
-    <>
-      <ThreeBackground />
-      <div className="login-page">
-        <div className="login-card glass-card-static animate-slideUp">
-          <div className="login-header">
-            <div className="login-logo" style={{ background: 'none', boxShadow: 'none' }}>
-              <LogoIcon size={56} />
+    <div className="login">
+      <main className="login__main">
+        <form className="login__form" onSubmit={handleSubmit}>
+          <h1 className="login__title">Sign in</h1>
+          <p className="login__lede">Use the email and password for your ERP + CRM account.</p>
+
+          {error && (
+            <div className="alert" role="alert">
+              {error}
             </div>
-            <h1>ERP + CRM Portal</h1>
-            <p>Sign in to your operations dashboard</p>
+          )}
+
+          <div className="field">
+            <label htmlFor="login-email">Email address</label>
+            <input
+              id="login-email"
+              type="email"
+              className="input"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="username"
+              required
+              autoFocus
+            />
           </div>
 
-          {error && <div className="login-error">{error}</div>}
+          <div className="field">
+            <label htmlFor="login-password">Password</label>
+            <input
+              id="login-password"
+              type="password"
+              className="input"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              required
+            />
+          </div>
 
-          <form onSubmit={handleSubmit}>
-            <div className="form-group">
-              <label className="form-label" htmlFor="login-email">Email Address</label>
-              <input
-                id="login-email"
-                type="email"
-                className="form-input"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="Enter your email"
-                required
-                autoFocus
-              />
-            </div>
+          <button type="submit" className="btn btn--primary btn--block" disabled={loading}>
+            {loading ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
+      </main>
 
-            <div className="form-group">
-              <label className="form-label" htmlFor="login-password">Password</label>
-              <input
-                id="login-password"
-                type="password"
-                className="form-input"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter your password"
-                required
-              />
-            </div>
+      <aside className="login__aside" aria-labelledby="test-accounts">
+        <div className="brand brand--static">
+          <LogoIcon size={30} />
+          <span>ERP Portal</span>
+        </div>
 
-            <button type="submit" className="btn btn-primary login-btn" disabled={loading}>
-              {loading ? 'Signing in...' : 'Sign In'}
-            </button>
-          </form>
-
-          <div style={{ marginTop: '24px', borderTop: '1px solid rgba(148,163,184,0.1)', paddingTop: '16px' }}>
-            <p style={{ fontSize: '0.75rem', color: '#64748b', marginBottom: '8px', textAlign: 'center' }}>
-              Quick Login (Test Accounts)
-            </p>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-              {testCredentials.map((cred) => (
+        <div>
+          <h2 id="test-accounts" className="login__aside-title">Test accounts</h2>
+          <p className="login__aside-lede">Choose a role to fill in its credentials.</p>
+          <ul className="roles">
+            {testAccounts.map((acc) => (
+              <li key={acc.role}>
                 <button
-                  key={cred.role}
                   type="button"
-                  className="btn btn-ghost btn-sm"
+                  className="roles__btn"
                   onClick={() => {
-                    setEmail(cred.email);
-                    setPassword(cred.password);
+                    setEmail(acc.email);
+                    setPassword(acc.password);
                   }}
                 >
-                  {cred.role}
+                  <span className="roles__name">{acc.role}</span>
+                  <span className="roles__opens">{acc.opens}</span>
                 </button>
-              ))}
-            </div>
-          </div>
+              </li>
+            ))}
+          </ul>
         </div>
-      </div>
-    </>
+      </aside>
+    </div>
   );
 }
